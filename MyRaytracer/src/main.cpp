@@ -10,7 +10,7 @@
 
 using namespace std;
 
-
+//test for my working computer ssh key
 
 color3 ray_color(const ray& r, const hittable& world, int depth)
 {
