@@ -6,11 +6,13 @@
 #include "material.h"
 
 #include<iostream>
+#include<thread>
+#include<vector>
+#include<mutex>
+#include<atomic>
 
 
 using namespace std;
-
-//test for my working computer ssh key
 
 color3 ray_color(const ray& r, const hittable& world, int depth)
 {
@@ -80,15 +82,47 @@ hittable_list random_scene() {
 	return world;
 }
 
+void render_tile(
+	int row_start, int row_end,
+	int col_start, int col_end,
+	int image_width, int image_height,
+	int samples_per_pixel, int max_depth,
+	const camera& cam, const hittable& world,
+	std::vector<std::vector<color3>>& framebuffer,
+	std::atomic<int>& tiles_done,
+	std::mutex& cerr_mutex)
+{
+	for (int j = row_start; j < row_end; j++)
+	{
+		for (int i = col_start; i < col_end; i++)
+		{
+			color3 pixel_color(0, 0, 0);
+			for (int s = 0; s < samples_per_pixel; ++s)
+			{
+				auto u = (i + random_double()) / (image_width - 1);
+				auto v = (j + random_double()) / (image_height - 1);
+				ray r = cam.get_ray(u, v);
+				pixel_color += ray_color(r, world, max_depth);
+			}
+			framebuffer[j][i] = pixel_color;
+		}
+	}
+
+	int done = ++tiles_done;
+	{
+		std::lock_guard<std::mutex> lock(cerr_mutex);
+		std::cerr << "\rTiles completed: " << done << "/16" << std::flush;
+	}
+}
+
 int main()
 {
 	const auto aspect_ratio = 3.0 / 2.0;
 	const int image_width = 1200;
 	const int image_height = static_cast<int>(image_width / aspect_ratio);
 	const int samples_per_pixel = 500;
-	const int max_depth =50;
-	//world
-	
+	const int max_depth = 50;
+
 	auto world = random_scene();
 
 	// Camera
@@ -99,27 +133,59 @@ int main()
 	auto aperture = 0.1;
 	camera cam(lookfrom, lookat, vup, 20, aspect_ratio, aperture, dist_to_focus);
 
+	// Framebuffer: store all pixel colors, then write sequentially
+	std::vector<std::vector<color3>> framebuffer(
+		image_height, std::vector<color3>(image_width));
 
+	// 4x4 tile grid → 16 threads
+	const int tile_rows = 4;
+	const int tile_cols = 4;
 
+	std::vector<std::thread> threads;
+	std::atomic<int> tiles_done(0);
+	std::mutex cerr_mutex;
+
+	std::cerr << "Rendering with " << tile_rows * tile_cols
+	          << " threads (" << tile_rows << "x" << tile_cols << " tiles)..."
+	          << std::endl;
+
+	for (int ty = 0; ty < tile_rows; ty++)
+	{
+		int row_start = ty * image_height / tile_rows;
+		int row_end = (ty + 1) * image_height / tile_rows;
+
+		for (int tx = 0; tx < tile_cols; tx++)
+		{
+			int col_start = tx * image_width / tile_cols;
+			int col_end = (tx + 1) * image_width / tile_cols;
+
+			threads.emplace_back(render_tile,
+				row_start, row_end, col_start, col_end,
+				image_width, image_height,
+				samples_per_pixel, max_depth,
+				std::cref(cam), std::cref(world),
+				std::ref(framebuffer),
+				std::ref(tiles_done),
+				std::ref(cerr_mutex));
+		}
+	}
+
+	for (auto& t : threads)
+		t.join();
+
+	std::cerr << "\nWriting output..." << std::endl;
+
+	// Write PPM output (top to bottom: j from image_height-1 down to 0)
 	cout << "P3\n" << image_width << ' ' << image_height << "\n255\n";
-
 	for (int j = image_height - 1; j >= 0; j--)
 	{
-		std::cerr << "\rScanLines Remaining:" << j << ' ' << std::flush;
 		for (int i = 0; i < image_width; i++)
 		{
-			color3 pixel_color(0, 0, 0);
-			for (int s = 0; s < samples_per_pixel; ++s) 
-			{
-				auto u = (i + random_double()) / (image_width - 1);
-				auto v = (j + random_double()) / (image_height - 1);
-				ray r = cam.get_ray(u, v);
-				pixel_color += ray_color(r, world, max_depth);
-			}
-			write_color(std::cout, pixel_color, samples_per_pixel);
+			write_color(std::cout, framebuffer[j][i], samples_per_pixel);
 		}
-		std::cerr << "\nDone!" << std::endl;
 	}
+
+	std::cerr << "Done!" << std::endl;
 
 	return 0;
 }

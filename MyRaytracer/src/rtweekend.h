@@ -6,6 +6,7 @@
 #include<memory>
 
 #include<cstdlib>
+#include<random>
 
 using std::shared_ptr;
 using std::make_shared;
@@ -16,7 +17,9 @@ const double pi = 3.1415926535897932385;
 
 inline double random_double()
 {
-	return rand() / (RAND_MAX + 1.0);
+	thread_local std::mt19937 generator(std::random_device{}());
+	std::uniform_real_distribution<double> distribution(0.0, 1.0);
+	return distribution(generator);
 }
 
 inline double random_double(double min, double max)
